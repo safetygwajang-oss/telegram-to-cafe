@@ -12,6 +12,7 @@ MENU_ID = "16"
 # ==========================================================
 MAX_TOTAL_BODY = 5000   # 본문 전체 최대 길이 (원문 기준)
 MAX_PER_ITEM = 1500     # 개별 메시지 최대 길이
+MAX_SUBJECT_LEN = 90    # 네이버 카페 제목 최대 길이
 
 
 def get_access_token():
@@ -57,30 +58,35 @@ def clean_forbidden_words(text):
     return text.strip()
 
 
-def build_subject(digest_info):
+def extract_subject_from_first_msg(items, date_str):
     """
-    제목: ASCII 문자로만 구성 (PC 리스트에서 안 깨지게)
-    형식: [ECONOMY] BRIEFING #YYMMDD (N items)
+    ⭐ 첫 메시지의 첫 줄을 카페 게시글 제목으로 사용
+    예: "[8/5, 장 시작 전 생각: 갈아타기 vs 추가하기, 키움 한지영]"
     """
-    date_str = digest_info["date"]           # 2026-08-05
-    count = digest_info["count"]
-    yymmdd = date_str[2:].replace("-", "")   # 260805
+    if not items:
+        return "[" + date_str + "] 시황 브리핑"
 
-    subject = "[ECONOMY] BRIEFING #" + yymmdd + " (" + str(count) + " items)"
-    return subject
+    first_body = items[0].get("body", "").strip()
+    first_line = first_body.split("\n")[0].strip()
+
+    # 첫 줄이 너무 짧거나 비어있으면 fallback
+    if len(first_line) < 5:
+        return "[" + date_str + "] 시황 브리핑"
+
+    # 길이 제한 (90자 초과 시 자르기)
+    if len(first_line) > MAX_SUBJECT_LEN:
+        first_line = first_line[:MAX_SUBJECT_LEN - 3] + "..."
+
+    return first_line
 
 
 def build_headline_box(digest_info):
-    """본문 최상단 헤드라인 박스 - '진짜 제목' 역할"""
+    """본문 최상단 헤드라인 박스 - 채널명 + 날짜 + 건수"""
     lines = []
-    date_str = digest_info["date"]
-    count = digest_info["count"]
-
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📢 [경제 브리핑] " + date_str)
-    lines.append("     📊 총 " + str(count) + "건")
+    lines.append("📢 " + digest_info["chat_name"])
+    lines.append("📅 " + digest_info["date"] + "  |  📊 총 " + str(digest_info["count"]) + "건")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-
     return lines
 
 
@@ -89,7 +95,7 @@ def build_content(digest_info):
     lines = []
     items = digest_info["items"]
 
-    # ========== 🎯 헤드라인 박스 (진짜 제목) ==========
+    # ========== 헤드라인 박스 ==========
     lines.extend(build_headline_box(digest_info))
     lines.append("")
     lines.append("")
@@ -140,7 +146,11 @@ def build_content(digest_info):
 
 
 def post_to_cafe(digest_info, access_token):
-    subject = build_subject(digest_info)
+    # ⭐ 제목: 첫 메시지 첫 줄에서 자동 추출
+    subject = extract_subject_from_first_msg(
+        digest_info["items"],
+        digest_info["date"]
+    )
     content = build_content(digest_info)
 
     print("  📝 제목:", subject)
@@ -181,5 +191,4 @@ def post_to_cafe(digest_info, access_token):
         return None
 
     article_url = result["message"]["result"]["articleUrl"]
-    print("  ✅ 성공:", article_url)
     return article_url
