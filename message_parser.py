@@ -1,24 +1,14 @@
+"""
+텔레그램 원본 메시지 → 정제된 dict
+"""
 import re
-import hashlib
-
-# 명확한 스팸/광고만 제외
-SPAM_PATTERNS = [
-    r"리딩방", r"무료\s*체험", r"수익률\s*보장",
-    r"http[s]?://t\.me/joinchat", r"오픈채팅.*초대",
-    r"입장코드", r"VIP\s*방",
-]
-
-# 🎯 출처 감추기 - 채널명/운영자명 등 (필요시 추가)
-FORBIDDEN_WORDS = [
-    # 예: "OOO경제방", "@admin_name",
-]
-
-MIN_LEN = 15  # 이보다 짧으면 잡담으로 판단
+from config import MIN_MSG_LEN, SPAM_PATTERNS
+from utils import mask_forbidden, content_hash
 
 
-def is_valid(text):
-    """유효한 경제정보인지 판별"""
-    if len(text) < MIN_LEN:
+def _is_valid(text: str) -> bool:
+    """스팸/광고/잡담 필터링"""
+    if len(text) < MIN_MSG_LEN:
         return False
     for pat in SPAM_PATTERNS:
         if re.search(pat, text):
@@ -26,35 +16,19 @@ def is_valid(text):
     return True
 
 
-def clean_text(text):
-    """출처 마스킹 + 정리"""
-    if not text:
-        return text
-    for w in FORBIDDEN_WORDS:
-        text = text.replace(w, "")
-    text = re.sub(r"https?://t\.me/\S+", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def content_hash(text):
-    """중복 판별용 해시 (공백 제거 후 앞 200자)"""
-    normalized = re.sub(r"\s+", "", text)[:200]
-    return hashlib.md5(normalized.encode()).hexdigest()
-
-
-def parse(msg):
+def parse(msg: dict) -> dict | None:
     """
-    메시지 정제 + 유효성 검사
-    반환: 파싱된 dict 또는 None
+    원본 메시지 → 파싱 결과
+    반환: dict 또는 None (유효하지 않은 경우)
     """
-    text = clean_text(msg["text"])
-    if not is_valid(text):
+    text = mask_forbidden(msg.get("text", ""))
+    if not _is_valid(text):
         return None
+
     return {
-        "msg_id": msg["msg_id"],
-        "chat_name": msg.get("chat_name", "Unknown"),  # ⭐ 톡방 이름 유지
-        "date_kst": msg["date_kst"],
-        "body": text,
-        "hash": content_hash(text),
+        "msg_id":    msg["msg_id"],
+        "chat_name": msg.get("chat_name", "Unknown"),
+        "date_kst":  msg["date_kst"],
+        "body":      text,
+        "hash":      content_hash(text),
     }
