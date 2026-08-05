@@ -13,6 +13,19 @@ STATE_FILE = "posted_messages.json"
 DATA_DIR = Path("data")
 
 
+def to_html_entity(text):
+    """이모지 및 특수문자를 네이버 API가 인식할 수 있게 변환하는 함수"""
+    if not text:
+        return ""
+    result = ""
+    for ch in text:
+        if ord(ch) < 128:
+            result += ch
+        else:
+            result += "&#" + str(ord(ch)) + ";"
+    return result
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -58,9 +71,13 @@ def main():
             continue
         if p["hash"] in posted_hashes:
             continue
+            
+        # ⭐ 핵심 추가: cafe_poster.py로 넘기기 전에 이모지/특수문자를 안전하게 변환
+        for key, value in p.items():
+            if isinstance(value, str) and key != "hash":  # hash는 원본 유지
+                p[key] = to_html_entity(value)
+                
         items.append(p)
-        # ⭐ 버그 수정: 여기서 posted_hashes.add() 하지 않음!
-        # → 카페 게시 성공한 후에만 추가함
 
     print(f"🆕 신규 유효 메시지: {len(items)}건")
 
