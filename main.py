@@ -13,17 +13,12 @@ STATE_FILE = "posted_messages.json"
 DATA_DIR = Path("data")
 
 
-def to_html_entity(text):
-    """이모지 및 특수문자를 네이버 API가 인식할 수 있게 변환하는 함수"""
+def clean_text(text):
+    """네이버 API 오류를 유발하는 4바이트 이모지만 제거하고 한국어/영어는 그대로 유지"""
     if not text:
         return ""
-    result = ""
-    for ch in text:
-        if ord(ch) < 128:
-            result += ch
-        else:
-            result += "&#" + str(ord(ch)) + ";"
-    return result
+    # ord(c) <= 0xFFFF 조건으로 기본 문자(한국어, 영어, 숫자, 일반 기호)만 남김
+    return "".join(c for c in text if ord(c) <= 0xFFFF)
 
 
 def load_state():
@@ -63,7 +58,7 @@ def main():
     raw_msgs = load_today_messages()
     print(f"📥 JSON에서 로드: {len(raw_msgs)}건")
 
-    # 2) 정제·중복 제거 (⭐ 여기서는 hash 저장 안함!)
+    # 2) 정제·중복 제거
     items = []
     for m in raw_msgs:
         p = parse(m)
@@ -72,10 +67,10 @@ def main():
         if p["hash"] in posted_hashes:
             continue
             
-        # ⭐ 핵심 추가: cafe_poster.py로 넘기기 전에 이모지/특수문자를 안전하게 변환
+        # ⭐ 핵심 수정: 한국어는 놔두고 이모지만 제거
         for key, value in p.items():
-            if isinstance(value, str) and key != "hash":  # hash는 원본 유지
-                p[key] = to_html_entity(value)
+            if isinstance(value, str) and key != "hash":
+                p[key] = clean_text(value)
                 
         items.append(p)
 
@@ -119,7 +114,6 @@ def main():
             url = post_to_cafe(digest_info, token)
             if url:
                 success_count += 1
-                # ⭐ 버그 수정: 게시 성공한 채널의 hash만 저장!
                 for msg in msgs:
                     posted_hashes.add(msg["hash"])
                 print(f"  🎉 완료: {url}")
