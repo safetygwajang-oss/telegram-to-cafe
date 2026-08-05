@@ -41,6 +41,19 @@ def remove_emojis(text):
     return "".join(c for c in text if ord(c) <= 0xFFFF)
 
 
+def to_html_entity(text):
+    """비-ASCII 문자를 HTML 엔티티로 변환"""
+    if not text:
+        return ""
+    result = ""
+    for ch in text:
+        if ord(ch) < 128:
+            result += ch
+        else:
+            result += "&#" + str(ord(ch)) + ";"
+    return result
+
+
 def clean_forbidden_words(text):
     """출처 노출 방지"""
     if not text:
@@ -137,17 +150,20 @@ def post_to_cafe(digest_info, access_token):
     print("  📝 제목:", subject)
     print("  📏 본문 길이:", len(content), "자")
 
+    # 3. HTML 엔티티 변환 (한글 안전 전송)
+    encoded_subject = to_html_entity(subject)
+    encoded_content = to_html_entity(content)
+
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
 
-    # 3. 깔끔한 기본 헤더 사용 (ms949 삭제)
     headers = {
         "Authorization": "Bearer " + access_token,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     }
 
-    # 4. requests 라이브러리가 알아서 안전하게 변환하도록 딕셔너리 그대로 전달
     data = {
-        "subject": subject,
-        "content": content,
+        "subject": encoded_subject,
+        "content": encoded_content,
         "openyn": "true",
     }
 
