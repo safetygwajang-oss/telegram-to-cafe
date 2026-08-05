@@ -30,12 +30,9 @@ def clean_text(text):
     """출처 마스킹 + 정리"""
     if not text:
         return text
-    # 금칙어 제거
     for w in FORBIDDEN_WORDS:
         text = text.replace(w, "")
-    # 텔레그램 초대링크 제거
     text = re.sub(r"https?://t\.me/\S+", "", text)
-    # 과도한 개행 정리
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -56,6 +53,7 @@ def parse(msg):
         return None
     return {
         "msg_id": msg["msg_id"],
+        "chat_name": msg.get("chat_name", "Unknown"),  # ⭐ 톡방 이름 유지
         "date_kst": msg["date_kst"],
         "body": text,
         "hash": content_hash(text),
