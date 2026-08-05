@@ -12,7 +12,8 @@ API_HASH = os.environ["TG_API_HASH"]
 # - 공개 채널: "@channel_username"
 # - 비공개 방: 방 이름 문자열 또는 채널 ID(정수)
 TARGET_CHATS = [
-    "@economy_daily_room",   # ← 실제 값으로 교체
+    -1001304649917,
+    -1001157157231,
 ]
 
 SESSION_NAME = "tg_session"
