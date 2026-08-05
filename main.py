@@ -13,14 +13,6 @@ STATE_FILE = "posted_messages.json"
 DATA_DIR = Path("data")
 
 
-def clean_text(text):
-    """네이버 API 오류를 유발하는 4바이트 이모지만 제거하고 한국어/영어는 그대로 유지"""
-    if not text:
-        return ""
-    # ord(c) <= 0xFFFF 조건으로 기본 문자(한국어, 영어, 숫자, 일반 기호)만 남김
-    return "".join(c for c in text if ord(c) <= 0xFFFF)
-
-
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -66,12 +58,6 @@ def main():
             continue
         if p["hash"] in posted_hashes:
             continue
-            
-        # ⭐ 핵심 수정: 한국어는 놔두고 이모지만 제거
-        for key, value in p.items():
-            if isinstance(value, str) and key != "hash":
-                p[key] = clean_text(value)
-                
         items.append(p)
 
     print(f"🆕 신규 유효 메시지: {len(items)}건")
