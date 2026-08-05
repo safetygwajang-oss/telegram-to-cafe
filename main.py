@@ -21,7 +21,6 @@ def load_state():
 
 
 def save_state(state):
-    # 최근 3000개만 유지 (파일 무한증가 방지)
     state["posted_hashes"] = state["posted_hashes"][-3000:]
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
@@ -51,7 +50,7 @@ def main():
     raw_msgs = load_today_messages()
     print(f"📥 JSON에서 로드: {len(raw_msgs)}건")
 
-    # 2) 정제·중복 제거
+    # 2) 정제·중복 제거 (⭐ 여기서는 hash 저장 안함!)
     items = []
     for m in raw_msgs:
         p = parse(m)
@@ -60,7 +59,8 @@ def main():
         if p["hash"] in posted_hashes:
             continue
         items.append(p)
-        posted_hashes.add(p["hash"])
+        # ⭐ 버그 수정: 여기서 posted_hashes.add() 하지 않음!
+        # → 카페 게시 성공한 후에만 추가함
 
     print(f"🆕 신규 유효 메시지: {len(items)}건")
 
@@ -70,7 +70,7 @@ def main():
         save_state(state)
         return
 
-    # 3) ⭐ 톡방(채널)별로 그룹화
+    # 3) 톡방(채널)별로 그룹화
     grouped = defaultdict(list)
     for item in items:
         grouped[item["chat_name"]].append(item)
@@ -79,16 +79,15 @@ def main():
     for ch, msgs in grouped.items():
         print(f"   - {ch}: {len(msgs)}건")
 
-    # 4) 토큰 발급 (1회)
+    # 4) 토큰 발급
     token = get_access_token()
 
-    # 5) ⭐ 톡방별로 개별 게시글 발행
+    # 5) 톡방별로 개별 게시글 발행
     today = datetime.now(KST).strftime("%Y-%m-%d")
     success_count = 0
     fail_count = 0
 
     for idx, (chat_name, msgs) in enumerate(grouped.items(), 1):
-        # 시간순 정렬 (오래된 것부터)
         msgs.sort(key=lambda x: x["date_kst"])
 
         digest_info = {
@@ -103,22 +102,24 @@ def main():
             url = post_to_cafe(digest_info, token)
             if url:
                 success_count += 1
+                # ⭐ 버그 수정: 게시 성공한 채널의 hash만 저장!
+                for msg in msgs:
+                    posted_hashes.add(msg["hash"])
                 print(f"  🎉 완료: {url}")
             else:
                 fail_count += 1
-                print(f"  ❌ 실패")
+                print(f"  ❌ 실패 (hash 저장 안 함 → 다음 실행 때 재시도)")
         except Exception as e:
             fail_count += 1
             print(f"  ❌ 오류: {e}")
 
-        # ⚠️ 스팸 필터 회피: 톡방 간 5초 대기
         if idx < len(grouped):
             print("  ⏳ 5초 대기...")
             time.sleep(5)
 
     print(f"\n🎉 전체 완료: 성공 {success_count}건 / 실패 {fail_count}건")
 
-    # 6) 상태 저장
+    # 6) 상태 저장 (성공한 것만)
     state["posted_hashes"] = list(posted_hashes)
     state["last_run"] = datetime.now(KST).isoformat()
     save_state(state)
