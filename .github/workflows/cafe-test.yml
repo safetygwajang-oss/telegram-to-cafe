@@ -1,0 +1,57 @@
+name: Cafe API Test
+
+on:
+  workflow_dispatch:   # 수동 실행 버튼
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install
+        run: pip install requests
+      
+      - name: Test Cafe Write
+        env:
+          CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.NAVER_REFRESH_TOKEN }}
+          CLUB_ID: ${{ secrets.NAVER_CAFE_CLUB_ID }}
+          MENU_ID: ${{ secrets.NAVER_CAFE_MENU_ID }}
+        run: |
+          python <<'EOF'
+          import os, requests, urllib.parse
+          
+          # 1) refresh_token으로 새 access_token 발급
+          r = requests.get("https://nid.naver.com/oauth2.0/token", params={
+              "grant_type": "refresh_token",
+              "client_id": os.environ["CLIENT_ID"],
+              "client_secret": os.environ["CLIENT_SECRET"],
+              "refresh_token": os.environ["REFRESH_TOKEN"],
+          })
+          print("=== TOKEN REFRESH ===")
+          print(r.status_code, r.text)
+          access_token = r.json()["access_token"]
+          
+          # 2) 카페 글쓰기
+          club_id = os.environ["CLUB_ID"]
+          menu_id = os.environ["MENU_ID"]
+          
+          res = requests.post(
+              f"https://openapi.naver.com/v1/cafe/{club_id}/menu/{menu_id}/articles",
+              headers={
+                  "Authorization": f"Bearer {access_token}",
+                  "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+              },
+              data=f"subject={urllib.parse.quote('Econbot 테스트')}&content={urllib.parse.quote('API 연동 테스트 글입니다')}&openyn=true",
+          )
+          print("=== CAFE WRITE ===")
+          print("Status:", res.status_code)
+          print("Response:", res.text)
+          EOF
