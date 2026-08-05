@@ -1,9 +1,10 @@
 """
 네이버 카페 게시글 작성
-- 테스트에서 검증된 방식: UTF-8 직접 전송 (HTML 엔티티 X)
-- requests가 자동으로 charset=utf-8 처리
+- 이상 문자 완전 제거 후 명시적 URL 인코딩으로 전송
 """
+import re
 import time
+import urllib.parse
 import requests
 
 from config import (
@@ -39,7 +40,27 @@ def get_access_token() -> str:
 
 
 # ==========================================================
-# 2. 제목 / 본문 빌더
+# 2. 이상 문자 제거 (네이버 API 403 방지)
+# ==========================================================
+def _sanitize(text: str) -> str:
+    """
+    네이버 카페 API가 거부하는 문자 완전 제거:
+    - 서로게이트 잔재 (U+D800 ~ U+DFFF)
+    - 제어문자 (개행/탭 제외)
+    - ZWJ, variation selector 등 이모지 결합자 잔재
+    - U+FFFD (replacement char)
+    """
+    if not text:
+        return ""
+    text = re.sub(r'[\ud800-\udfff]', '', text)
+    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+    text = re.sub(r'[\u200B-\u200D\uFE00-\uFE0F\uFFFD]', '', text)
+    text = text.encode('utf-8', errors='ignore').decode('utf-8')
+    return text
+
+
+# ==========================================================
+# 3. 제목 / 본문 빌더
 # ==========================================================
 def _build_subject(items: list, date_str: str) -> str:
     """첫 메시지의 첫 줄을 제목으로"""
@@ -100,15 +121,12 @@ def _build_content(digest: dict) -> str:
 
 
 # ==========================================================
-# 3. 발행
+# 4. 발행
 # ==========================================================
 def _post_once(subject: str, content: str, token: str) -> tuple[bool, str]:
     """
     단일 요청.
-    반환: (성공여부, 결과URL 또는 에러메시지)
-
-    ⭐ 핵심: HTML 엔티티 변환 없이 UTF-8 문자열 그대로 전송.
-    requests가 charset=utf-8로 자동 인코딩함.
+    ⭐ 테스트 워크플로우와 동일한 방식으로 body 직접 조립.
     """
     url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
 
@@ -117,15 +135,24 @@ def _post_once(subject: str, content: str, token: str) -> tuple[bool, str]:
         "Content-Type":  "application/x-www-form-urlencoded; charset=utf-8",
     }
 
-    data = {
-        "subject": subject,
-        "content": content,
-        "openyn":  "true",
-    }
+    body = "&".join([
+        f"subject={urllib.parse.quote(subject, safe='')}",
+        f"content={urllib.parse.quote(content, safe='')}",
+        "openyn=true",
+    ])
 
-    res = requests.post(url, headers=headers, data=data, timeout=HTTP_TIMEOUT)
+    res = requests.post(
+        url,
+        headers=headers,
+        data=body.encode("utf-8"),
+        timeout=HTTP_TIMEOUT,
+    )
 
     info(f"  응답 코드: {res.status_code}")
+
+    # 실패 시 디버깅용 본문 샘플
+    if res.status_code != 200:
+        info(f"  본문 앞 100자: {repr(content[:100])}")
 
     try:
         result = res.json()
@@ -134,7 +161,7 @@ def _post_once(subject: str, content: str, token: str) -> tuple[bool, str]:
 
     status = result.get("message", {}).get("status")
     if status != "200":
-        return False, f"status={status}, body={res.text[:200]}"
+        return False, f"status={status}, body={res.text[:300]}"
 
     article_url = result["message"]["result"]["articleUrl"]
     return True, article_url
@@ -149,16 +176,16 @@ def post_to_cafe(digest: dict, token: str) -> str | None:
     raw_subject = _build_subject(digest["items"], digest["date"])
     raw_content = _build_content(digest)
 
-    # 2. 이모지만 제거 (네이버 500 에러 방지)
-    subject = remove_emojis(raw_subject)
-    content = remove_emojis(raw_content)
+    # 2. 이모지 제거 + 이상 문자 완전 제거
+    subject = _sanitize(remove_emojis(raw_subject))
+    content = _sanitize(remove_emojis(raw_content))
 
     info(f"  제목: {subject}")
     info(f"  본문: {len(content)}자")
 
     # 3. 재시도 루프
     last_error = ""
-    for attempt in range(1, RETRY_COUNT + 2):  # 1회 + 재시도 N회
+    for attempt in range(1, RETRY_COUNT + 2):
         success, result = _post_once(subject, content, token)
         if success:
             return result
