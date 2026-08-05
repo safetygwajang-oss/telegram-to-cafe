@@ -1,9 +1,9 @@
 """
-메인 오케스트레이터
+메인 오케스트레이터 - 통합 발행 최종본
 1. 오늘자 JSON 로드
 2. 파싱 + 중복 제거
 3. 채널별 그룹화
-4. 카페 발행
+4. 🆕 모든 채널을 1개 글로 통합 발행 (Rate Limit 회피)
 5. 상태 저장
 """
 import json
@@ -16,7 +16,7 @@ from config import (
     MAX_HASH_HISTORY, POST_INTERVAL_SEC,
 )
 from message_parser import parse
-from cafe_poster import get_access_token, post_to_cafe
+from cafe_poster import get_access_token, post_all_unified
 from utils import info, ok, warn, fail
 
 
@@ -96,45 +96,54 @@ def main():
     # 5. 토큰 발급
     token = get_access_token()
 
-    # 6. 채널별 발행
+    # 6. 🆕 digest_list 구성 (채널별 → 하나의 리스트로)
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    success = 0
-    failure = 0
+    digest_list = []
 
-    for idx, (chat_name, msgs) in enumerate(grouped.items(), 1):
+    for chat_name, msgs in grouped.items():
         msgs.sort(key=lambda x: x["date_kst"])
-
-        digest = {
+        digest_list.append({
             "date":      today,
             "chat_name": chat_name,
             "count":     len(msgs),
             "items":     msgs,
-        }
+        })
 
-        info(f"\n[{idx}/{len(grouped)}] 📢 {chat_name} 발행 중...")
-        try:
-            url = post_to_cafe(digest, token)
-            if url:
-                success += 1
-                for msg in msgs:
+    # 7. 🆕 통합 발행 (1개 글로 몰빵)
+    info(f"\n📢 {len(digest_list)}개 채널을 1개 글로 통합 발행 시작")
+    info("=" * 60)
+
+    success_flag = False
+    total_msgs = sum(d["count"] for d in digest_list)
+
+    try:
+        url = post_all_unified(digest_list, token)
+        if url:
+            success_flag = True
+            # 성공 시 모든 메시지 hash 저장
+            for digest in digest_list:
+                for msg in digest["items"]:
                     posted_hashes.add(msg["hash"])
-                ok(f"완료: {url}")
-            else:
-                failure += 1
-                warn("실패 (hash 저장 안 함 → 다음 실행 시 재시도)")
-        except Exception as e:
-            failure += 1
-            fail(f"오류: {e}")
+            ok(f"🎉 통합 발행 완료: {url}")
+        else:
+            warn("통합 발행 실패 (hash 저장 안 함 → 다음 실행 시 재시도)")
+    except Exception as e:
+        fail(f"발행 중 예외: {e}")
+        import traceback
+        fail(traceback.format_exc())
 
-        if idx < len(grouped):
-            info(f"⏳ {POST_INTERVAL_SEC}초 대기...")
-            time.sleep(POST_INTERVAL_SEC)
-
-    # 7. 결과 요약
+    # 8. 결과 요약
     print()
-    ok(f"🎉 전체 완료: 성공 {success}건 / 실패 {failure}건")
+    if success_flag:
+        ok(f"🎉 전체 완료: {len(digest_list)}개 채널 / 총 {total_msgs}건 발행 성공")
+    else:
+        fail(f"❌ 전체 실패: {len(digest_list)}개 채널 / 총 {total_msgs}건 미발행")
+        info("💡 대응 방법:")
+        info("   1. 네이버 카페에서 오늘 올라간 테스트 글 삭제")
+        info("   2. 1~2시간 후 재실행 (Rate Limit 해제 대기)")
+        info("   3. 그래도 안 되면 Refresh Token 재발급 확인")
 
-    # 8. 상태 저장
+    # 9. 상태 저장
     state["posted_hashes"] = list(posted_hashes)
     state["last_run"] = datetime.now(KST).isoformat()
     save_state(state)
