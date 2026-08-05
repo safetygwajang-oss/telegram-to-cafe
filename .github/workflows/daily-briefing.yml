@@ -1,0 +1,82 @@
+name: Daily Cafe Briefing
+
+on:
+  # 매일 아침 8시 (KST) = UTC 23시 (전날)
+  schedule:
+    - cron: '0 23 * * *'
+  
+  # 수동 실행 버튼도 추가 (Actions 탭에서 클릭 가능)
+  workflow_dispatch:
+
+# 동시 실행 방지 (중복 게시 방지)
+concurrency:
+  group: daily-briefing
+  cancel-in-progress: false
+
+jobs:
+  collect-and-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ==========================================================
+      # 1. 코드 체크아웃
+      # ==========================================================
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # 2. Python 환경 설정
+      # ==========================================================
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ==========================================================
+      # 3. 패키지 설치
+      # ==========================================================
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ==========================================================
+      # 4. 텔레그램 메시지 수집
+      # ==========================================================
+      - name: 📡 Collect Telegram messages
+        env:
+          TELEGRAM_API_ID:   ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION:  ${{ secrets.TELEGRAM_SESSION }}
+        run: python telegram_collector.py
+
+      # ==========================================================
+      # 5. 네이버 카페 게시
+      # ==========================================================
+      - name: 📢 Post to Naver Cafe
+        env:
+          NAVER_CLIENT_ID:     ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          NAVER_REFRESH_TOKEN: ${{ secrets.NAVER_REFRESH_TOKEN }}
+        run: python main.py
+
+      # ==========================================================
+      # 6. 수집 데이터 & 게시 이력 커밋
+      # ==========================================================
+      - name: 💾 Commit data & state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add data/ posted_messages.json
+          
+          # 변경사항이 있을 때만 커밋
+          if git diff --staged --quiet; then
+            echo "변경사항 없음 - 커밋 스킵"
+          else
+            TODAY=$(TZ='Asia/Seoul' date +'%Y-%m-%d')
+            git commit -m "Auto: Daily briefing ${TODAY}"
+            git push
+          fi
