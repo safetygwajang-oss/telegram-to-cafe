@@ -1,13 +1,14 @@
 import json
 import os
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from telegram_collector import fetch_last_24h_messages
 from message_parser import parse
 from cafe_poster import get_access_token, post_to_cafe
 
 KST = timezone(timedelta(hours=9))
 STATE_FILE = "posted_messages.json"
+DATA_DIR = Path("data")
 
 
 def load_state():
@@ -24,6 +25,19 @@ def save_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
+def load_today_messages():
+    """오늘 날짜 JSON 파일에서 메시지 로드"""
+    today_str = datetime.now(KST).strftime("%Y-%m-%d")
+    data_file = DATA_DIR / f"{today_str}.json"
+    
+    if not data_file.exists():
+        print(f"⚠️ 데이터 파일이 없습니다: {data_file}")
+        return []
+    
+    with open(data_file, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 def main():
     print(f"🚀 시작: {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -31,8 +45,9 @@ def main():
     posted_hashes = set(state["posted_hashes"])
     print(f"📚 기존 게시 이력: {len(posted_hashes)}건 (해시 기준)")
 
-    # 1) 지난 24시간 텔레그램 메시지 수집
-    raw_msgs = fetch_last_24h_messages()
+    # 1) JSON 파일에서 오늘자 메시지 로드
+    raw_msgs = load_today_messages()
+    print(f"📥 JSON에서 로드: {len(raw_msgs)}건")
 
     # 2) 정제·중복 제거
     items = []
