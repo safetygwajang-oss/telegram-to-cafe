@@ -1,192 +1,172 @@
-import os
+"""
+네이버 카페 게시글 작성
+- 테스트에서 검증된 방식: UTF-8 직접 전송 (HTML 엔티티 X)
+- requests가 자동으로 charset=utf-8 처리
+"""
+import time
 import requests
 
-CAFE_ID = "31767633"
-MENU_ID = "16"
+from config import (
+    CAFE_ID, MENU_ID,
+    MAX_TOTAL_BODY, MAX_PER_ITEM, MAX_SUBJECT_LEN,
+    HTTP_TIMEOUT, RETRY_COUNT, RETRY_DELAY_SEC,
+    get_env,
+)
+from utils import info, ok, fail, warn, remove_emojis, mask_forbidden, truncate
+
 
 # ==========================================================
-# 🎯 본문 크기 제한
+# 1. 토큰
 # ==========================================================
-MAX_TOTAL_BODY = 5000
-MAX_PER_ITEM = 1500
-MAX_SUBJECT_LEN = 90
-
-
-def get_access_token():
-    CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
-    CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
-    REFRESH_TOKEN = os.environ["NAVER_REFRESH_TOKEN"]
-
+def get_access_token() -> str:
+    """refresh_token으로 access_token 재발급"""
     res = requests.get(
         "https://nid.naver.com/oauth2.0/token",
         params={
-            "grant_type": "refresh_token",
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "refresh_token": REFRESH_TOKEN,
+            "grant_type":    "refresh_token",
+            "client_id":     get_env("NAVER_CLIENT_ID"),
+            "client_secret": get_env("NAVER_CLIENT_SECRET"),
+            "refresh_token": get_env("NAVER_REFRESH_TOKEN"),
         },
-        timeout=10
+        timeout=HTTP_TIMEOUT,
     )
     data = res.json()
     if "access_token" not in data:
-        raise RuntimeError("토큰 재발급 실패: " + str(data))
-    print("✅ Access Token 발급")
+        raise RuntimeError(f"토큰 재발급 실패: {data}")
+
+    ok("Access Token 발급 완료")
     return data["access_token"]
 
 
-def remove_emojis(text):
-    """네이버 API 500 에러를 유발하는 4바이트 이모지만 깔끔하게 제거"""
-    if not text:
-        return ""
-    return "".join(c for c in text if ord(c) <= 0xFFFF)
-
-
-def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환"""
-    if not text:
-        return ""
-    result = ""
-    for ch in text:
-        if ord(ch) < 128:
-            result += ch
-        else:
-            result += "&#" + str(ord(ch)) + ";"
-    return result
-
-
-def clean_forbidden_words(text):
-    """출처 노출 방지"""
-    if not text:
-        return text
-    forbidden = ["iSAFETY", "isafety", "ISAFETY", "iSafety", "아이세이프티", "아이세이프"]
-    for word in forbidden:
-        text = text.replace(word, "")
-    return text.strip()
-
-
-def extract_subject_from_first_msg(items, date_str):
-    """첫 메시지의 첫 줄을 카페 게시글 제목으로 사용"""
+# ==========================================================
+# 2. 제목 / 본문 빌더
+# ==========================================================
+def _build_subject(items: list, date_str: str) -> str:
+    """첫 메시지의 첫 줄을 제목으로"""
     if not items:
-        return "[" + date_str + "] 시황 브리핑"
+        return f"[{date_str}] 시황 브리핑"
 
-    first_body = items[0].get("body", "").strip()
-    first_line = first_body.split("\n")[0].strip()
+    first_line = items[0].get("body", "").strip().split("\n")[0].strip()
 
     if len(first_line) < 5:
-        return "[" + date_str + "] 시황 브리핑"
+        return f"[{date_str}] 시황 브리핑"
 
-    if len(first_line) > MAX_SUBJECT_LEN:
-        first_line = first_line[:MAX_SUBJECT_LEN - 3] + "..."
-
-    return first_line
+    return truncate(first_line, MAX_SUBJECT_LEN)
 
 
-def build_headline_box(digest_info):
-    """본문 최상단 헤드라인 박스"""
-    lines = []
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(digest_info["chat_name"])
-    lines.append("📅 " + digest_info["date"] + "  |  📊 총 " + str(digest_info["count"]) + "건")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    return lines
+def _build_headline(digest: dict) -> list[str]:
+    return [
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        digest["chat_name"],
+        f"📅 {digest['date']}  |  📊 총 {digest['count']}건",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "",
+    ]
 
 
-def build_content(digest_info):
-    """본문 - 헤드라인 박스 + 시간순 메시지 목록"""
-    lines = []
-    items = digest_info["items"]
-
-    lines.extend(build_headline_box(digest_info))
-    lines.append("")
-    lines.append("")
-
+def _build_content(digest: dict) -> str:
+    lines = _build_headline(digest)
     current_size = len("\n".join(lines))
-    truncated_count = 0
-    included_count = 0
+    included = 0
+    truncated = 0
+    items = digest["items"]
 
     for i, item in enumerate(items, 1):
-        time_str = item.get("date_kst", "")[11:16] if item.get("date_kst") else ""
-        body = clean_forbidden_words(item.get("body", ""))
+        time_str = item.get("date_kst", "")[11:16]
+        body = mask_forbidden(item.get("body", ""))
+        body = truncate(body, MAX_PER_ITEM, suffix="\n... (이하 생략)")
 
-        if len(body) > MAX_PER_ITEM:
-            body = body[:MAX_PER_ITEM] + "\n... (이하 생략)"
+        header = f"[ {i}. {time_str} ]"
+        block = f"{header}\n{body}\n\n----------------------------------------\n\n"
 
-        header = "[ " + str(i) + ". " + time_str + " ]"
-        block_text = header + "\n" + body + "\n\n----------------------------------------\n\n"
-
-        if current_size + len(block_text) > MAX_TOTAL_BODY:
-            truncated_count = len(items) - included_count
+        if current_size + len(block) > MAX_TOTAL_BODY:
+            truncated = len(items) - included
             break
 
-        lines.append(header)
-        lines.append(body)
-        lines.append("")
-        lines.append("----------------------------------------")
-        lines.append("")
+        lines.extend([header, body, "", "----------------------------------------", ""])
+        current_size += len(block)
+        included += 1
 
-        current_size += len(block_text)
-        included_count += 1
+    if truncated > 0:
+        lines.extend(["", f">> 본문 길이 제한으로 {truncated}건은 생략되었습니다.", ""])
 
-    if truncated_count > 0:
-        lines.append("")
-        lines.append(">> 본문 길이 제한으로 " + str(truncated_count) + "건은 생략되었습니다.")
-        lines.append("")
-
-    lines.append("※ 본 정보는 참고용이며, 투자 판단의 근거로 사용하지 마세요.")
-    lines.append("※ 투자에 대한 모든 책임은 본인에게 있습니다.")
+    lines.extend([
+        "※ 본 정보는 참고용이며, 투자 판단의 근거로 사용하지 마세요.",
+        "※ 투자에 대한 모든 책임은 본인에게 있습니다.",
+    ])
 
     return "\n".join(lines)
 
 
-def post_to_cafe(digest_info, access_token):
-    # 1. 제목과 본문 생성
-    raw_subject = extract_subject_from_first_msg(digest_info["items"], digest_info["date"])
-    raw_content = build_content(digest_info)
+# ==========================================================
+# 3. 발행
+# ==========================================================
+def _post_once(subject: str, content: str, token: str) -> tuple[bool, str]:
+    """
+    단일 요청.
+    반환: (성공여부, 결과URL 또는 에러메시지)
 
-    # 2. 이모지 제거 (네이버 500 에러 방지)
-    subject = remove_emojis(raw_subject)
-    content = remove_emojis(raw_content)
-
-    print("  📝 제목:", subject)
-    print("  📏 본문 길이:", len(content), "자")
-
-    # 3. HTML 엔티티 변환 (한글 안전 전송)
-    encoded_subject = to_html_entity(subject)
-    encoded_content = to_html_entity(content)
-
-    url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
+    ⭐ 핵심: HTML 엔티티 변환 없이 UTF-8 문자열 그대로 전송.
+    requests가 charset=utf-8로 자동 인코딩함.
+    """
+    url = f"https://openapi.naver.com/v1/cafe/{CAFE_ID}/menu/{MENU_ID}/articles"
 
     headers = {
-        "Authorization": "Bearer " + access_token,
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/x-www-form-urlencoded; charset=utf-8",
     }
 
     data = {
-        "subject": encoded_subject,
-        "content": encoded_content,
-        "openyn": "true",
+        "subject": subject,
+        "content": content,
+        "openyn":  "true",
     }
 
-    res = requests.post(
-        url,
-        headers=headers,
-        data=data,
-        timeout=15
-    )
+    res = requests.post(url, headers=headers, data=data, timeout=HTTP_TIMEOUT)
 
-    print("  📨 상태코드:", res.status_code)
-    print("  📨 응답:", res.text[:300])
+    info(f"  응답 코드: {res.status_code}")
 
     try:
         result = res.json()
     except Exception:
-        print("  ❌ JSON 파싱 실패")
-        return None
+        return False, f"JSON 파싱 실패: {res.text[:200]}"
 
     status = result.get("message", {}).get("status")
     if status != "200":
-        print("  ❌ 실패 - 상태:", status)
-        return None
+        return False, f"status={status}, body={res.text[:200]}"
 
     article_url = result["message"]["result"]["articleUrl"]
-    return article_url
+    return True, article_url
+
+
+def post_to_cafe(digest: dict, token: str) -> str | None:
+    """
+    카페에 게시글 작성 (재시도 포함)
+    반환: 성공 시 URL, 실패 시 None
+    """
+    # 1. 제목/본문 생성
+    raw_subject = _build_subject(digest["items"], digest["date"])
+    raw_content = _build_content(digest)
+
+    # 2. 이모지만 제거 (네이버 500 에러 방지)
+    subject = remove_emojis(raw_subject)
+    content = remove_emojis(raw_content)
+
+    info(f"  제목: {subject}")
+    info(f"  본문: {len(content)}자")
+
+    # 3. 재시도 루프
+    last_error = ""
+    for attempt in range(1, RETRY_COUNT + 2):  # 1회 + 재시도 N회
+        success, result = _post_once(subject, content, token)
+        if success:
+            return result
+
+        last_error = result
+        warn(f"  시도 {attempt} 실패: {result}")
+        if attempt <= RETRY_COUNT:
+            time.sleep(RETRY_DELAY_SEC)
+
+    fail(f"  최종 실패: {last_error}")
+    return None
