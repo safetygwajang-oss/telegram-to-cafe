@@ -1,5 +1,4 @@
 import os
-import urllib.parse
 import requests
 
 CAFE_ID = "31767633"
@@ -35,15 +34,11 @@ def get_access_token():
     return data["access_token"]
 
 
-def to_html_entity(text):
-    """비-ASCII 문자를 HTML 엔티티로 변환 (ms949 호환)"""
-    result = ""
-    for ch in text:
-        if ord(ch) < 128:
-            result += ch
-        else:
-            result += "&#" + str(ord(ch)) + ";"
-    return result
+def remove_emojis(text):
+    """네이버 API 500 에러를 유발하는 4바이트 이모지만 깔끔하게 제거"""
+    if not text:
+        return ""
+    return "".join(c for c in text if ord(c) <= 0xFFFF)
 
 
 def clean_forbidden_words(text):
@@ -77,7 +72,7 @@ def build_headline_box(digest_info):
     """본문 최상단 헤드라인 박스"""
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📢 " + digest_info["chat_name"])
+    lines.append(digest_info["chat_name"])
     lines.append("📅 " + digest_info["date"] + "  |  📊 총 " + str(digest_info["count"]) + "건")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
     return lines
@@ -131,38 +126,35 @@ def build_content(digest_info):
 
 
 def post_to_cafe(digest_info, access_token):
-    subject = extract_subject_from_first_msg(
-        digest_info["items"],
-        digest_info["date"]
-    )
-    content = build_content(digest_info)
+    # 1. 제목과 본문 생성
+    raw_subject = extract_subject_from_first_msg(digest_info["items"], digest_info["date"])
+    raw_content = build_content(digest_info)
+
+    # 2. 이모지 제거 (네이버 500 에러 방지)
+    subject = remove_emojis(raw_subject)
+    content = remove_emojis(raw_content)
 
     print("  📝 제목:", subject)
     print("  📏 본문 길이:", len(content), "자")
 
-    # ⭐ 비-ASCII → HTML 엔티티 변환 (ms949 호환용)
-    encoded_subject = to_html_entity(subject)
-    encoded_content = to_html_entity(content)
-
     url = "https://openapi.naver.com/v1/cafe/" + CAFE_ID + "/menu/" + MENU_ID + "/articles"
 
-    # ⭐ ⭐ ⭐ 핵심 수정 1: charset을 ms949로!
+    # 3. 깔끔한 기본 헤더 사용 (ms949 삭제)
     headers = {
         "Authorization": "Bearer " + access_token,
-        "Content-Type": "application/x-www-form-urlencoded; charset=ms949",
     }
 
-    # ⭐ ⭐ ⭐ 핵심 수정 2: URL 인코딩 후 ms949 바이트로 명시 전송
-    body_params = urllib.parse.urlencode({
-        "subject": encoded_subject,
-        "content": encoded_content,
+    # 4. requests 라이브러리가 알아서 안전하게 변환하도록 딕셔너리 그대로 전달
+    data = {
+        "subject": subject,
+        "content": content,
         "openyn": "true",
-    })
+    }
 
     res = requests.post(
         url,
         headers=headers,
-        data=body_params.encode("ms949", errors="replace"),
+        data=data,
         timeout=15
     )
 
